@@ -36,6 +36,8 @@ async def read_state(device, state):
 class SpaceMouseReader:
     def __init__(self):
         self.devices = pyspacemouse.list_devices()
+        self.devices = list(set(self.devices)) # remove duplicate foundings
+        self.devices.sort(reverse=1)
         print("-"*12, "Found Connected Devices:", self.devices, "-"*12)
         
         self.states = [State(device_name=d) for d in self.devices]
@@ -49,11 +51,12 @@ class SpaceMouseReader:
         while 1:
             # state callback, trigger callback to process the current state
             if callback:
-                callback(self.states)
+                for i, s in enumerate(self.states):
+                    callback(s, i)
             await asyncio.sleep(1/freq)
         # asyncio.gather(tasks)
         
-    def read(self, freq=1, callback=lambda x: print([s.state for s in x])):
+    def read(self, freq=1, callback=lambda x,y: print(x.state)):
         asyncio.run(self.start_reading(freq=freq, callback=callback))
 
     

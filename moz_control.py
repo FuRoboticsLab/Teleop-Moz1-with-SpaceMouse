@@ -1,7 +1,7 @@
 import asyncio
 from mouse import SpaceMouseReader
 import numpy as np
-# from mozrobot import MOZ1Robot, MOZ1RobotConfig
+from mozrobot import MOZ1Robot, MOZ1RobotConfig
 from scipy.spatial.transform import Rotation as R
 import time
 import math
@@ -64,7 +64,7 @@ def unit_vector(data, axis=None, out=None):
     if out is None:
         return data
     
-def get_rotation(angle, direction, point=None):
+def get_rotation(angle, direction):
     """
     Returns matrix to rotate about axis defined by point and direction.
 
@@ -118,9 +118,12 @@ def get_rotation(angle, direction, point=None):
     
     return R.from_matrix(r)
 
-def get_new_abs_pose(current_pose, delta_pose, sensitivity=[1, 1, 1, 1, 1, 1]):
+def get_new_abs_pose(current_pose, delta_pose, sensitivity=[1, 1, 1, 1, 1, 1], euler_mode="absolute"):
     current_pose = np.array(current_pose)
     delta_pose = np.array(delta_pose)
+
+    delta_pose[0] = -delta_pose[0] # x
+    delta_pose[1] = -delta_pose[1] # y
 
     xyz = current_pose[:3] + delta_pose[:3] * sensitivity[:3]
     
@@ -129,16 +132,41 @@ def get_new_abs_pose(current_pose, delta_pose, sensitivity=[1, 1, 1, 1, 1, 1]):
 
     roll, pitch, yaw = delta_pose[3:] * sensitivity[3:]
 
-    drot1 = get_rotation(angle=pitch, direction=[1.0, 0, 0], point=None)
-    drot2 = get_rotation(angle=-roll, direction=[0, 1.0, 0], point=None)
-    drot3 = get_rotation(angle=-yaw, direction=[0, 0, 1.0], point=None)
+    if euler_mode == "absolute":
+        drot1 = get_rotation(angle=-yaw, direction=[1.0, 0, 0])
+        drot2 = get_rotation(angle=pitch, direction=[0, 1.0, 0])
+        drot3 = get_rotation(angle=-roll, direction=[0, 0, 1.0])
+    elif euler_mode == "relative":
+        axis = rotation.as_matrix()
+        drot1 = get_rotation(angle=-yaw, direction=axis.T[0])
+        drot2 = get_rotation(angle=pitch, direction=axis.T[2])
+        drot3 = get_rotation(angle=roll, direction=axis.T[1])
 
     rotation = rotation * drot1 * drot2 * drot3 # adopt the rotation
     rpy = rotation.as_euler("xyz")
     return np.concatenate((xyz, rpy))
     # convert RPY to an absolute orientation
 
+def reset_robot_positions(robot: MOZ1Robot) -> bool:
+    # using rad
+    left_arm_init_joints = [pos * np.pi / 180 for pos in [-9, -50, -20, -90, -35, 8, -7]]
+    right_arm_init_joints = [pos * np.pi / 180 for pos in [9, -50, 20, 90, 35, 8, 7]]
+    # torso_init_joints = [pos * np.pi / 180 for pos in [30, 0, 0, 30, 0, 0]]
+    gripper_init_positions = [0.12, 0.12]
+    robot.reset_robot_positions(left_arm_joints=left_arm_init_joints,
+                                    right_arm_joints=right_arm_init_joints, 
+                                    # torso_joints=torso_init_joints,
+                                    gripper_positions=gripper_init_positions)
 
+    # wait for robot move to reset position
+    time.sleep(1)
+    robot.reset_robot_positions(left_arm_joints=left_arm_init_joints,
+                                    right_arm_joints=right_arm_init_joints, 
+                                    # torso_joints=torso_init_joints,
+                                    gripper_positions=gripper_init_positions)
+    time.sleep(1)
+
+    return True
 
 class MozController:
     def __init__(self, enable_soft_realtime=False, sensitivity=[1, 1, 1, 1, 1, 1]):
@@ -156,68 +184,70 @@ class MozController:
         for i, side in enumerate(self.target_keys.keys()):
             print(f"{side} arm is controlled by " + self.MouseReader.devices[i])
         # ------------ initializing MozControl ------------ 
-        # camera_serials = "230322270398, 313522302626, 230422271253"
-        # camera_resolutions = "320*240, 320*240, 320*240"
-        # config = MOZ1RobotConfig(
-        #     # realsense_serials=camera_serials,
-        #     # camera_resolutions=camera_resolutions,
-        #     no_camera=True,
-        #     structure="wholebody",
-        #     robot_control_hz=120,
-        #     enable_soft_realtime=enable_soft_realtime, # if true remember to run scripts/setup_rtprio.sh first
-        # )
+        camera_serials = "230322270398, 313522302626, 230422271253"
+        camera_resolutions = "320*240, 320*240, 320*240"
+        config = MOZ1RobotConfig(
+            # realsense_serials=camera_serials,
+            # camera_resolutions=camera_resolutions,
+            no_camera=True,
+            structure="wholebody",
+            robot_control_hz=120,
+            enable_soft_realtime=enable_soft_realtime, # if true remember to run scripts/setup_rtprio.sh first\
+            # bind_cpu_idxs=5,
+        )
 
-        # self.robot = MOZ1Robot(config)
-        # self.robot.connect()
-        # if self.robot.is_robot_connected:
-        #     print("机器人连接成功")
-        # else:
-        #     print("机器人连接不成功，请调试")
-        #     raise RuntimeError("robot connect failed")
-        # self.robot.enable_external_following_mode()
+        self.robot = MOZ1Robot(config)
+        self.robot.connect()
+        if self.robot.is_robot_connected:
+            print("机器人连接成功")
+        else:
+            print("机器人连接不成功，请调试")
+            raise RuntimeError("robot connect failed")
+        self.robot.enable_external_following_mode()
     
     def start_control(self, sensitivity=[1, 1, 1, 1, 1, 1]):
-        obs = {
-            "leftarm_state_cart_pos" : [0,0,0,0,0,0],
-            "rightarm_state_cart_pos" : [0,0,0,1,1,1],
-            "leftarm_gripper_state_pos" : [0],
-            "rightarm_gripper_state_pos": [0],
-        }
+        leftarm_buttons = [0, 0] # (reset, grip)
+        rightarm_buttons = [0, 0] # (grip, enable external)
         
-        def action_callback(s):
+        def action_callback(s, i):
+            # i == 0 for left arm control, i == 1 for right arm control
             action = {}
-            if not s[0].is_zero():
-                # obs = self.robot.capture_observation()
-                current_pose = obs["leftarm_state_cart_pos"]
-                delta_pose = s[0].pose()
-                action[self.target_keys["left"]["arm"]] = get_new_abs_pose(current_pose, delta_pose, sensitivity)
+            flag = 0
+            arm = "left" if i == 0 else "right"
 
-                buttons = s[0].button()
-                if buttons[0] == 1:
-                    current_grip = obs["leftarm_gripper_state_pos"]
-                    target_grip = 1 if current_grip < 0.5 else 0
-                    action["leftarm_gripper_cmd_pos"] = 1
-            if not s[1].is_zero():
-                # obs = self.robot.capture_observation()
-                current_pose = obs["rightarm_state_cart_pos"]
-                delta_pose = s[0].pose()
-                action[self.target_keys["right"]["arm"]] = get_new_abs_pose(current_pose, delta_pose, sensitivity)
+            if not s.is_zero():
+                flag = 1
+                obs = self.robot.capture_observation()
+                current_pose = obs[f"{arm}arm_state_cart_pos"]
+                delta_pose = s.pose()
+                action[self.target_keys[f"{arm}"]["arm"]] = get_new_abs_pose(current_pose, delta_pose, sensitivity)
 
-                buttons = s[0].button()
-                if buttons[0] == 1:
-                    current_grip = obs["rightarm_gripper_state_pos"]
-                    target_grip = 1 if current_grip < 0.5 else 0
-                    action["rightarm_gripper_cmd_pos"] = 1
-
-            # self.robot.send_action(action)
+                buttons = s.button()
+                if buttons[1-i] == 1:
+                    if i == 0:
+                        leftarm_buttons[1-i] = 0.12 - leftarm_buttons[1-i]
+                        action[f"{arm}arm_gripper_cmd_pos"] = np.array([leftarm_buttons[1-i]])
+                    else:
+                        rightarm_buttons[1-i] = 0.12 -rightarm_buttons[1-i]
+                        action[f"{arm}arm_gripper_cmd_pos"] = np.array([rightarm_buttons[1-i]])
+                
+                if buttons[i] == 1:
+                    if i == 0:
+                        rightarm_buttons[1] = 0 # reset leftarm buttons to zero to enable reset button
+                        self.robot.enable_external_following_mode()
+                    if i == 1 and not rightarm_buttons[1]:
+                        rightarm_buttons[1] = 1
+                        reset_robot_positions(self.robot)
+                    
+            if flag:
+                self.robot.send_action(action)
             try:
-                print(action["leftarm_cmd_cart_pos"][3:])
-                print(action["rightarm_cmd_cart_pos"][3:])
+                print(action[f"{arm}arm_cmd_cart_pos"][3:])
             except Exception as e:
                 pass
         
-        self.MouseReader.read(freq=10, callback=action_callback)
+        self.MouseReader.read(freq=120, callback=action_callback)
 
 if __name__=="__main__":
-    test = MozController()
-    test.start_control(sensitivity=[0.01, 0.01, 0.01, 0.01, 0.01, 0.01])
+    test = MozController(enable_soft_realtime=0)
+    test.start_control(sensitivity=[0.03, 0.03, 0.03, 0.05, 0.05, 0.05])
