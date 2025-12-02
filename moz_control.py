@@ -1,7 +1,10 @@
 import asyncio
 from mouse import SpaceMouseReader
 import numpy as np
-from mozrobot import MOZ1Robot, MOZ1RobotConfig
+try:
+    from mozrobot import MOZ1Robot, MOZ1RobotConfig
+except:
+    print("Mozrobot unavailable. Skip moz initialization. Continue with no robot.")
 from scipy.spatial.transform import Rotation as R
 import time
 import math
@@ -132,22 +135,20 @@ def get_new_abs_pose(current_pose, delta_pose, sensitivity=[1, 1, 1, 1, 1, 1], e
 
     roll, pitch, yaw = delta_pose[3:] * sensitivity[3:]
 
-    if euler_mode == "absolute":
-        drot1 = get_rotation(angle=-yaw, direction=[1.0, 0, 0])
-        drot2 = get_rotation(angle=pitch, direction=[0, 1.0, 0])
-        drot3 = get_rotation(angle=-roll, direction=[0, 0, 1.0])
-    elif euler_mode == "relative":
-        axis = rotation.as_matrix()
-        drot1 = get_rotation(angle=-yaw, direction=axis.T[0])
-        drot2 = get_rotation(angle=pitch, direction=axis.T[2])
-        drot3 = get_rotation(angle=roll, direction=axis.T[1])
+    drot1 = get_rotation(angle=-yaw, direction=[1.0, 0, 0])
+    drot2 = get_rotation(angle=pitch, direction=[0, 1.0, 0])
+    drot3 = get_rotation(angle=-roll, direction=[0, 0, 1.0])
+    
+    if euler_mode == "relative":
+        rotation = rotation * drot1 * drot2 * drot3 # adopt the rotation
+    elif euler_mode == "absolute":
+        rotation = drot3 * drot2 * drot1 * rotation # adopt the rotation
 
-    rotation = rotation * drot1 * drot2 * drot3 # adopt the rotation
     rpy = rotation.as_euler("xyz")
     return np.concatenate((xyz, rpy))
     # convert RPY to an absolute orientation
 
-def reset_robot_positions(robot: MOZ1Robot) -> bool:
+def reset_robot_positions(robot) -> bool:
     # using rad
     left_arm_init_joints = [pos * np.pi / 180 for pos in [-9, -50, -20, -90, -35, 8, -7]]
     right_arm_init_joints = [pos * np.pi / 180 for pos in [9, -50, 20, 90, 35, 8, 7]]
@@ -248,6 +249,38 @@ class MozController:
         
         self.MouseReader.read(freq=120, callback=action_callback)
 
+def test_rotation():
+    from visualizer import EulerAngleVisualizer
+
+    visualizer = EulerAngleVisualizer(fig_size=(12, 10), axis_length=2.0, fps=15)
+    
+    start = [12.265380,67.665895,-102085081]
+    start = [d / 180 * np.pi for d in start]
+    euler_seq = [start]
+    rotation = R.from_euler('xyz', start)
+    angle = 0
+    direction = [0, 0, 1]
+    drot = get_rotation(angle, direction)
+    temp = drot.as_matrix()
+    for i in range(100):
+        rotation = drot * rotation
+        # rotation = drot.as_matrix() @ rotation.as_matrix()
+        # rotation = R.from_matrix(rotation)
+        euler_seq.append(rotation.as_euler("xyz"))
+        # start[1] += angle
+        # euler_seq.append(start.copy())
+
+    visualizer.generate_video(
+        euler_angles_seq=euler_seq,
+        order='xyz',  # 旋转顺序，可根据需要修改
+        output_path='euler_visualization.mp4',
+        video_size=(720, 720)
+    )
+
+def main():
+    controller = MozController(enable_soft_realtime=0)
+    controller.start_control(sensitivity=[0.03, 0.03, 0.03, 0.05, 0.05, 0.05])
+
 if __name__=="__main__":
-    test = MozController(enable_soft_realtime=0)
-    test.start_control(sensitivity=[0.03, 0.03, 0.03, 0.05, 0.05, 0.05])
+    main()
+    test_rotation()
