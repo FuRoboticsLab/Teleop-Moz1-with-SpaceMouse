@@ -133,7 +133,12 @@ def get_new_abs_pose(current_pose, delta_pose, sensitivity=[1, 1, 1, 1, 1, 1], e
     # old euler to rotation
     rotation = R.from_euler('xyz', current_pose[3:])
 
-    roll, pitch, yaw = delta_pose[3:] * sensitivity[3:]
+    # roll, pitch, yaw = delta_pose[3:] * sensitivity[3:]
+    rot = delta_pose[3:] * sensitivity[3:]
+    i = np.argmax(rot)
+    new_rot = np.zeros_like(rot)
+    new_rot[i] = rot[i]
+    roll, pitch, yaw = new_rot
 
     drot1 = get_rotation(angle=-yaw, direction=[1.0, 0, 0])
     drot2 = get_rotation(angle=pitch, direction=[0, 1.0, 0])
@@ -283,4 +288,4 @@ def main():
 
 if __name__=="__main__":
     main()
-    test_rotation()
+    # test_rotation()
